@@ -4,11 +4,12 @@ use strict;
 use threads;
 use Dancer;
 
+set port => 80;
 set logger => 'console';
 set engines => { JSON => { canonical => 1 } };
 
 my $sender = "/usr/local/sbin/pilight-send -p raw -c";
-my $config_file = "/root/433ctrl/devices.json";
+my $config_file = "/opt/433ctrl/devices.json";
 
 get '/list' => sub {
   my ($config, $devices) = load_config();
@@ -18,10 +19,18 @@ get '/list' => sub {
 get '/state' => sub {
   my ($config, $devices) = load_config();
   if (exists $devices->{params->{device}}) {
-    async {
-      state_check($config, $devices->{params->{device}});
-    };
-    return to_json({"state" => $devices->{params->{device}}->{state}});
+    my $format = exists params->{format}? params->{format}: "";
+    if ($format eq "string") {
+      return uc($devices->{params->{device}}->{state});
+    } elsif ($format eq "switch") {
+      my $out = uc($devices->{params->{device}}->{state});
+      if ($out ne "ON") {
+	$out = "OFF";
+      }
+      return $out;
+    } else { # json is default
+      return to_json({"state" => uc($devices->{params->{device}}->{state})});
+    }
   } else {
     send_error("unknown device", 404);
     return;
@@ -43,7 +52,21 @@ get '/switch' => sub {
   }
 };
 
-start;
+init();
+async {
+    while (1) {
+        sleep 60;
+        init();
+    }
+};
+start();
+
+sub init {
+  my ($config, $devices) = load_config();
+  foreach my $dev (values %{$devices}) {
+    state_check($config, $dev);
+  }
+}
 
 sub load_config {
   open F, "<$config_file" or die "error opening $config_file: $!";
@@ -83,7 +106,7 @@ sub set_state {
   }
 
   # set state to pending
-  $devices->{$dev}->{state} = "pending:$state";
+  $devices->{$dev}->{state} = "turning $state";
   save_config($config);
 
   async {

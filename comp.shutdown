@@ -1,6 +1,6 @@
 #!/bin/bash
-HOST=192.168.1.100
-ssh $HOST poweroff
+HOST=$1
+ssh -i /root/.ssh/id_rsa.carpo $HOST poweroff
 while [ -n "$(ping -c 1 $HOST|grep 'bytes from')" ]; do 
     sleep 1
 done
