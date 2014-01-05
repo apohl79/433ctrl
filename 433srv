@@ -6,7 +6,7 @@ use Dancer;
 
 set port => 80;
 set logger => 'console';
-set engines => { JSON => { canonical => 1 } };
+#set engines => { JSON => { canonical => 1 } };
 
 my $sender = "/usr/local/sbin/pilight-send -p raw -c";
 my $config_file = "/opt/433ctrl/devices.json";

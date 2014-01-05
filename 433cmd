@@ -1,0 +1,111 @@
+#!/usr/bin/perl
+
+use strict;
+use JSON;
+
+my $sender = "/usr/local/sbin/pilight-send -p raw -c";
+my $config_file = "/opt/433ctrl/devices.json";
+
+my $dev;
+my $to;
+my $skip_prepost;
+if (scalar(@ARGV) >= 2) {
+    ($dev, $to, $skip_prepost) = @ARGV;
+    if ($skip_prepost ne "--skip-prepost") {
+        undef $skip_prepost;
+    }
+} else {
+    usage();
+}
+
+print "loading devices... ";
+my ($config, $devices) = load_config();
+print "done\n";
+if (exists $devices->{$dev}) {
+    if ($to eq "on" or $to eq "off") {
+        set_state($config, $devices, $dev, $to);
+    } else {
+        usage("wrong state");
+    }
+} else {
+    usage("unknown device");
+}
+
+sub usage {
+    my $msg = shift;
+    if (defined($msg)) {
+        print "ERROR: $msg\n";
+    }
+    print "$0 dev <on|off> [--skip-prepost]\n";
+    exit 1;
+}
+
+sub load_config {
+  open F, "<$config_file" or die "error opening $config_file: $!";
+  my $data;
+  $data .= $_ while (<F>);
+  close F;
+  my $config = from_json $data;
+  my $devices = {};
+  foreach my $dev (@{$config->{devices}}) {
+    $devices->{$dev->{id}} = $dev;
+  }
+  return ($config, $devices);
+}
+
+sub save_config {
+  my $config = shift;
+  my $data = to_json $config;
+  open F, ">$config_file" or die "error opening $config_file: $!";
+  print F $data;
+  close F;
+}
+
+sub set_state {
+  my $config = shift;
+  my $devices = shift;
+  my $dev = shift;
+  my $state = shift;
+  my $code = $devices->{$dev}->{$state."_code"};
+
+  my @pre_cmds;
+  my @post_cmds;
+  if (!defined($skip_prepost)) {
+      if (exists $devices->{$dev}->{$state."_pre_commands"}) {
+          @pre_cmds = @{$devices->{$dev}->{$state."_pre_commands"}};
+      }
+      if (exists $devices->{$dev}->{$state."_post_commands"}) {
+          @post_cmds = @{$devices->{$dev}->{$state."_post_commands"}};
+      }
+  }
+
+  # set state to pending
+  $devices->{$dev}->{state} = "turning $state";
+  save_config($config);
+
+  if (!defined($skip_prepost)) {
+      # run pre commands
+      print "running ".scalar(@pre_cmds)." pre commands... ";
+      foreach my $cmd (@pre_cmds) {
+          system "$cmd";
+      }
+      print "done\n";
+  }
+
+  # switch the socket
+  print "sending 433MHz code... ";
+  system "$sender \"$code\"";
+  print "done\n";
+
+  if (!defined($skip_prepost)) {
+      # run post commands
+      print "running ".scalar(@post_cmds)." post commands... ";
+      foreach my $cmd (@post_cmds) {
+          system "$cmd";
+      }
+      print "done\n";
+  }
+
+  $devices->{$dev}->{state} = $state;
+  save_config($config);
+}
