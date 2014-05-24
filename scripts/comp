@@ -1,0 +1,27 @@
+#!/bin/bash
+CMD=$1
+HOST=$2
+case "$CMD" in
+    boot)
+        while [ -z "$(ping -c 1 $HOST|grep 'bytes from')" ]; do 
+            sleep 1
+        done
+        ;;
+    shutdown)
+        ssh -i /root/.ssh/id_rsa.carpo $HOST poweroff
+        while [ -n "$(ping -c 1 $HOST|grep 'bytes from')" ]; do 
+            sleep 1
+        done
+        ;;
+    state)
+        if [ -n "$(ping -c 1 $HOST|grep 'bytes from')" ]; then
+            echo -n "on"
+        else
+            echo -n "off"
+        fi
+        ;;
+    *)
+        echo "$0 {boot|shutdown|state} <host|ip>"
+        exit 1
+        ;;
+esac

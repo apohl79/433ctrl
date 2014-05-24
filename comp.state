@@ -1,7 +1,0 @@
-#!/bin/bash
-HOST=$1
-if [ -n "$(ping -c 1 $HOST|grep 'bytes from')" ]; then
-    echo -n "on"
-else
-    echo -n "off"
-fi

@@ -3,32 +3,78 @@
 use strict;
 use JSON;
 
-my $sender = "/usr/local/sbin/pilight-send -p raw -c";
-my $config_file = "/opt/433ctrl/devices.json";
+my $sender = "nice -20 /usr/local/bin/433bus --rc-code=";
+my $wolcmd = "/usr/bin/wakeonlan";
+my $comp = "/opt/433ctrl/scripts/comp";
+my $config_dir = "/opt/433ctrl";
+my $config_file = "$config_dir/devices.json";
+my $scripts_dir = "$config_dir/scripts";
 
-my $dev;
-my $to;
-my $skip_prepost;
-if (scalar(@ARGV) >= 2) {
-    ($dev, $to, $skip_prepost) = @ARGV;
+my $dev = shift @ARGV;
+
+print "loading devices... ";
+my ($config, $devs_by_id, $devs_by_name) = load_config();
+print "done\n";
+my $device = $devs_by_id->{$dev};
+$device ||= $devs_by_name->{$dev};
+if (defined($device)) {
+    my ($to, $skip_prepost) = @ARGV;
     if ($skip_prepost ne "--skip-prepost") {
         undef $skip_prepost;
     }
-} else {
-    usage();
-}
-
-print "loading devices... ";
-my ($config, $devices) = load_config();
-print "done\n";
-if (exists $devices->{$dev}) {
     if ($to eq "on" or $to eq "off") {
-        set_state($config, $devices, $dev, $to);
+        set_state($config, $device, $to, $skip_prepost);
     } else {
         usage("wrong state");
     }
 } else {
-    usage("unknown device");
+    if ($dev eq "list") {
+        foreach my $id (sort keys %{$devs_by_id}) {
+            printf "%2d %s\n", $id, $devs_by_id->{$id}->{name};
+        }
+    } elsif ($dev eq "add") {
+        my $name = shift @ARGV;
+        print "Press the ON button for the device to add. Waiting... ";
+        my $on_code = read_code();
+        print "done\n";
+        sleep 3;
+        print "Press the OFF button for the device to add. Waiting... ";
+        my $off_code = read_code();
+        print "done\n";
+        my $dev_new = { name => $name,
+                        id => get_next_id(),
+                        on_code => $on_code,
+                        off_code => $off_code,
+                        state => "off",
+                        state_check => [],
+                        on_post_commands => [],
+                        off_pre_commands => [] };
+        push @{$config->{devices}}, $dev_new;
+        save_config($config);
+    } elsif ($dev eq "addwol") {
+        my $name = shift @ARGV;
+        print "Enter HW address of the device (example: b8:27:eb:d1:68:7d): ";
+        my $hwaddr = <STDIN>;
+        chomp $hwaddr;
+        my $dev_new = { name => $name,
+                        id => get_next_id(),
+                        on_code => "",
+                        off_code => "",
+                        state => "off",
+                        state_check => [],
+                        on_post_commands => ["$wolcmd $hwaddr"],
+                        off_pre_commands => ["$comp shutdown $name"] };
+        push @{$config->{devices}}, $dev_new;
+        save_config($config);
+    } elsif ($dev eq "scripts") {
+        print "generating static scripts... \n";
+        foreach my $id (sort keys %{$devs_by_id}) {
+            write_script($id, "on");
+            write_script($id, "off");
+        }
+    } else {
+        usage("unknown device");
+    }
 }
 
 sub usage {
@@ -36,8 +82,54 @@ sub usage {
     if (defined($msg)) {
         print "ERROR: $msg\n";
     }
-    print "$0 dev <on|off> [--skip-prepost]\n";
+    print "$0 dev [<on|off> [--skip-prepost]] | [list] | [add name] | [addwol name] | [scripts]\n";
     exit 1;
+}
+
+sub write_script {
+    my $id = shift;
+    my $state = shift;
+    my $script = "$scripts_dir/$devs_by_id->{$id}->{name}_$state";
+    print " $script\n";
+    open F, ">$script" or die "failed to open $script: $!";
+    if (exists $devs_by_id->{$id}->{$state."_pre_commands"}) {
+        foreach my $cmd (@{$devs_by_id->{$id}->{$state."_pre_commands"}}) {
+            print F "$cmd\n";
+        }
+    }
+    if (length($devs_by_id->{$id}->{$state."_code"}) > 0) {
+        print F "$sender'".$devs_by_id->{$id}->{$state."_code"}."'\n";
+    }
+    if (exists $devs_by_id->{$id}->{$state."_post_commands"}) {
+        foreach my $cmd (@{$devs_by_id->{$id}->{$state."_post_commands"}}) {
+            print F "$cmd\n";
+        }
+    }
+    close F;
+    chmod 0755, $script;
+}
+
+sub read_code {
+    system "pilight-debug > /tmp/433.pilight.dbg";
+    open F, "</tmp/433.pilight.dbg";
+    my $code;
+    while (<F>) {
+        if (/Raw code/) {
+            $code = <F>;
+            chomp $code;
+            $code =~ s/ +$//;
+            last;
+        }
+    }
+    close F;
+    unlink "/tmp/433.pilight.dbg";
+    return $code;
+}
+
+sub get_next_id {
+    my @ids = sort(keys(%{$devs_by_id}));
+    my $id = $ids[$#ids] + 1;
+    return $id;
 }
 
 sub load_config {
@@ -46,16 +138,18 @@ sub load_config {
   $data .= $_ while (<F>);
   close F;
   my $config = from_json $data;
-  my $devices = {};
+  my $devs_by_id = {};
+  my $devs_by_name = {};
   foreach my $dev (@{$config->{devices}}) {
-    $devices->{$dev->{id}} = $dev;
+    $devs_by_id->{$dev->{id}} = $dev;
+    $devs_by_name->{$dev->{name}} = $dev;
   }
-  return ($config, $devices);
+  return ($config, $devs_by_id, $devs_by_name);
 }
 
 sub save_config {
   my $config = shift;
-  my $data = to_json $config;
+  my $data = to_json $config, {pretty => 1};
   open F, ">$config_file" or die "error opening $config_file: $!";
   print F $data;
   close F;
@@ -63,25 +157,21 @@ sub save_config {
 
 sub set_state {
   my $config = shift;
-  my $devices = shift;
   my $dev = shift;
   my $state = shift;
-  my $code = $devices->{$dev}->{$state."_code"};
+  my $skip_prepost = shift;
+  my $code = $dev->{$state."_code"};
 
   my @pre_cmds;
   my @post_cmds;
   if (!defined($skip_prepost)) {
-      if (exists $devices->{$dev}->{$state."_pre_commands"}) {
-          @pre_cmds = @{$devices->{$dev}->{$state."_pre_commands"}};
+      if (exists $dev->{$state."_pre_commands"}) {
+          @pre_cmds = @{$dev->{$state."_pre_commands"}};
       }
-      if (exists $devices->{$dev}->{$state."_post_commands"}) {
-          @post_cmds = @{$devices->{$dev}->{$state."_post_commands"}};
+      if (exists $dev->{$state."_post_commands"}) {
+          @post_cmds = @{$dev->{$state."_post_commands"}};
       }
   }
-
-  # set state to pending
-  $devices->{$dev}->{state} = "turning $state";
-  save_config($config);
 
   if (!defined($skip_prepost)) {
       # run pre commands
@@ -94,7 +184,8 @@ sub set_state {
 
   # switch the socket
   print "sending 433MHz code... ";
-  system "$sender \"$code\"";
+  print "exec: $sender '$code'";
+  system "$sender '$code'";
   print "done\n";
 
   if (!defined($skip_prepost)) {
@@ -105,7 +196,4 @@ sub set_state {
       }
       print "done\n";
   }
-
-  $devices->{$dev}->{state} = $state;
-  save_config($config);
 }
