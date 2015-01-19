@@ -1,6 +1,9 @@
 #!/bin/bash
 CMD=$1
 HOST=$2
+shift
+shift
+SSH="ssh"
 case "$CMD" in
     boot)
         while [ -z "$(ping -c 1 $HOST|grep 'bytes from')" ]; do 
@@ -8,10 +11,25 @@ case "$CMD" in
         done
         ;;
     shutdown)
-        ssh -i /root/.ssh/id_rsa.carpo $HOST poweroff
+        . /tmp/ssh-agent.env
+        $SSH $HOST poweroff >>/dev/shm/$HOST.ssh.log 2>&1
         while [ -n "$(ping -c 1 $HOST|grep 'bytes from')" ]; do 
             sleep 1
         done
+        ;;
+    startup)
+        pid=$(ps x|grep $HOST|grep _off|awk '{print $1}')
+        if [ -n "$pid" ]; then
+            kill -9 $pid
+        fi
+        pid=$(ps x|grep $HOST|grep shutdown|awk '{print $1}')
+        if [ -n "$pid" ]; then
+            kill -9 $pid
+        fi
+        pid=$(ps x|grep $HOST|grep ssh|awk '{print $1}')
+        if [ -n "$pid" ]; then
+            kill -9 $pid
+        fi
         ;;
     state)
         if [ -n "$(ping -c 1 $HOST|grep 'bytes from')" ]; then
@@ -20,8 +38,14 @@ case "$CMD" in
             echo -n "off"
         fi
         ;;
-    *)
-        echo "$0 {boot|shutdown|state} <host|ip>"
-        exit 1
+    cmd)
+        $SSH $HOST $* >>/dev/shm/$HOST.ssh.log 2>&1
         ;;
+    *)
+        echo "$0 <command> <host> [args]"
+        echo "Commands:"
+        echo "  boot      Block until the host responds to pings"
+        echo "  shutdown  Exec poweroff on the host and block until it stops responding to ping"
+        echo "  state     Check if a host is up by sending pings"
+        echo "  cmd       Exec <args> on the host"
 esac

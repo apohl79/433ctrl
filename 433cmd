@@ -3,7 +3,7 @@
 use strict;
 use JSON;
 
-my $sender = "nice -20 /usr/local/bin/433bus --rc-code=";
+my $sender = "nice -20 /usr/local/bin/433bus --repeat=50 --rc-code=";
 my $wolcmd = "/usr/bin/wakeonlan";
 my $comp = "/opt/433ctrl/scripts/comp";
 my $config_dir = "/opt/433ctrl";
@@ -66,6 +66,21 @@ if (defined($device)) {
                         off_pre_commands => ["$comp shutdown $name"] };
         push @{$config->{devices}}, $dev_new;
         save_config($config);
+    } elsif ($dev eq "addcomp") {
+        my $name = shift @ARGV;
+        print "Enter HW address of the device (example: b8:27:eb:d1:68:7d): ";
+        my $hwaddr = <STDIN>;
+        chomp $hwaddr;
+        my $dev_new = { name => $name,
+                        id => get_next_id(),
+                        on_code => "",
+                        off_code => "",
+                        state => "off",
+                        state_check => [],
+                        on_post_commands => ["$comp startup $name"],
+                        off_pre_commands => ["$comp shutdown $name"] };
+        push @{$config->{devices}}, $dev_new;
+        save_config($config);
     } elsif ($dev eq "scripts") {
         print "generating static scripts... \n";
         foreach my $id (sort keys %{$devs_by_id}) {
@@ -82,7 +97,7 @@ sub usage {
     if (defined($msg)) {
         print "ERROR: $msg\n";
     }
-    print "$0 dev [<on|off> [--skip-prepost]] | [list] | [add name] | [addwol name] | [scripts]\n";
+    print "$0 dev [<on|off> [--skip-prepost]] | [list] | [add name] | [addcomp name] | [addwol name] | [scripts]\n";
     exit 1;
 }
 
