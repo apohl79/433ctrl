@@ -2,23 +2,31 @@
 #include <string>
 #include <vector>
 #include <cstdlib>
+#include <chrono>
+#include <atomic>
+#include <thread>
 #include <getopt.h>
+#include <wiringPi.h>
 
-#include "wiringPi.h"
+using namespace std;
+using namespace chrono;
 
-#include <RadioHead.h>
-#include <RH_ASK.h>
-#include <RHReliableDatagram.h>
+const time_point<high_resolution_clock> TP_UNSET;
+time_point<high_resolution_clock> g_last(TP_UNSET);
+const size_t MAX_TIME_VALUES = 128;
+vector<uint32_t> g_times(MAX_TIME_VALUES);
+uint32_t g_time_idx = 0;
+uint8_t g_sync_count = 0;
+atomic<bool> g_capture_done(false);
 
-/**
- * \brief Send a raw rc code captured by pilight-debug.
- */
-void send_rc_code(int pin, std::string& code, int repeat) {
+void send_rc_code(int pin, string& code, int repeat) {
+    cout << "Sending code on pin " << pin << endl; 
+    pinMode(pin, OUTPUT);
     // parse the list of micro secs
-    std::vector<useconds_t> codes;
-    codes.push_back(std::atoi(code.c_str()));
-    std::string::size_type pos = 0;
-    while (std::string::npos != (pos = code.find(' ', pos + 1))) {
+    vector<useconds_t> codes;
+    codes.push_back(atoi(code.c_str()));
+    string::size_type pos = 0;
+    while (string::npos != (pos = code.find(' ', pos + 1))) {
         codes.push_back(atoi(code.c_str() + pos));        
     }
     // send the code <repeat> times
@@ -30,40 +38,78 @@ void send_rc_code(int pin, std::string& code, int repeat) {
             out = !out;
         }
     }
-    std::cout << std::endl;
 }
 
-void send_message(int pin, int speed, std::string& msg, int repeat) {
-    RH_ASK drv(speed, pin, pin+1, pin+2);
-    RHDatagram mgr(drv, 5);
-    std::cout << "init" << std::endl;
-    if (!mgr.init()) {
-        std::cerr << "init failed" << std::endl;
+void interrupt_handler() {
+    if (g_capture_done) {
         return;
     }
-    std::cout << "sending" << std::endl;;
-    while(repeat--) {
-        mgr.sendto((const uint8_t*) msg.c_str(), msg.length(), 5);
-        if (!mgr.waitPacketSent()) {
-            std::cout << "failed" << std::endl;
-            return;
+    auto now = high_resolution_clock::now();
+    if (TP_UNSET == g_last) {
+        g_last = now;
+    } else {
+        uint32_t timediff = duration<uint32_t, micro>(now - g_last).count();
+        g_last = now;
+        if (g_time_idx < MAX_TIME_VALUES) {
+            g_times[g_time_idx++] = timediff;
+        } else {
+            // reset
+            g_time_idx = 0;
+            g_sync_count = 0;
+        }
+        if (timediff > 4000) {
+            g_sync_count++;
+            if (g_sync_count == 3) {
+                uint32_t pulselen = timediff;
+                // find the smalles value and assume it as pulse len
+                for (uint32_t i = 0; i < g_time_idx; i++) {
+                    if (g_times[i] < pulselen) {
+                        pulselen = g_times[i];
+                    }
+                }
+                if (pulselen > 90 && pulselen < 700) {
+                    // output values as multiple pulselens
+                    for (uint32_t i = 0; i < g_time_idx; i++) {
+                        uint32_t pulses = g_times[i] / pulselen;
+                        cout << (pulses * pulselen) << " ";
+                    }
+                    cout << endl;
+                    g_capture_done = true;
+                } else {
+                    // reset
+                    g_time_idx = 0;
+                    g_sync_count = 0;                    
+                }
+            } else {
+                g_time_idx = 0;
+            }
         }
     }
-    std::cout << "done" << std::endl;
+}
+
+void recv_rc_code(int pin) {
+    cout << "Receiving code on pin " << pin << endl; 
+    pinMode(pin, INPUT);
+    if (wiringPiISR(pin, INT_EDGE_BOTH, interrupt_handler) < 0) {
+        cerr << "wiringPiISR failed" << endl;
+        return;
+    }
+    while (!g_capture_done) {
+        this_thread::sleep_for(seconds(1));
+    }
 }
 
 void usage(const char* prog) {
-    std::cerr << "Usage: " << prog << " <Options>" << std::endl
-              << std::endl
-              << "Options:" << std::endl
-              << "  --rc-code='<code>'      Raw code to send (ints separated with spaces). This code" << std::endl
-              << "                          can be captured by running pilight-debug." << std::endl
-              << "  --pin=<number>          Transmitter pin. Default is 0." << std::endl
-              << "  --repeat=<number>       Number of times to repeat the code/message. This is" << std::endl
-              << "                          needed as the RPi can't do real time from user space." << std::endl
-              << "                          Default is 20." << std::endl
-              << "  --message='<msg>'       Message to send." << std::endl
-              << "  --speed=<bps>           Speed in bits per second. Default is 2000." << std::endl
+    cerr << "Usage: " << prog << " <Options>" << endl
+              << endl
+              << "Options:" << endl
+              << "  --rc-code='<code>'      Code to send (ints separated with spaces). This code can" << endl
+              << "                          be captured via --rc-learn." << endl
+              << "  --rc-learn              Capture a code sequence." << endl
+              << "  --pin=<number>          Transmitter/Receiver pin. Default is 0." << endl
+              << "  --repeat=<number>       Number of times to repeat the code/message. This is" << endl
+              << "                          needed as the RPi can't do real time from user space." << endl
+              << "                          Default is 20." << endl
         ;
 }
 
@@ -73,8 +119,7 @@ int main(int argc, char** argv) {
             {"pin", required_argument, 0, 'p'},
             {"repeat", required_argument, 0, 'r'},
             {"rc-code", required_argument, 0, 'c'},
-            {"message", required_argument, 0, 'm'},
-            {"speed", required_argument, 0, 's'},
+            {"rc-learn", optional_argument, 0, 'l'},
             {0, 0, 0, 0},
         };
     
@@ -83,29 +128,27 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    std::string msg;
+    string msg;
     int mode = 0;
     int pin = 0;
     int repeat = 20;
-    int speed = 2000;
 
     int index;
     int opt;
     while ((opt = getopt_long(argc, argv, "", longopts, &index)) != -1) {
         switch (opt) {
         case 'p':
-            pin = std::atoi(optarg);
+            pin = atoi(optarg);
             break;
         case 'r':
-            repeat = std::atoi(optarg);
+            repeat = atoi(optarg);
             break;
         case 'c':
-            mode = 1; // RC mode
-        case 'm':
             msg = optarg;
+            mode = 0; // RC mode
             break;
-        case 's':
-            speed = std::atoi(optarg);
+        case 'l':
+            mode = 1;
             break;
         default:
             usage(argv[0]);
@@ -114,17 +157,16 @@ int main(int argc, char** argv) {
     }
 
     if (wiringPiSetup() == -1) {
-        std::cerr << "wiringPiSetup failed" << std::endl;
+        cerr << "wiringPiSetup failed" << endl;
         return 1;
     }
-    pinMode(pin, OUTPUT);
 
     switch (mode) {
     case 0:
-        send_message(pin, speed, msg, repeat);
+        send_rc_code(pin, msg, repeat);
         break;
     case 1:
-        send_rc_code(pin, msg, repeat);
+        recv_rc_code(pin);
         break;
     }
     
