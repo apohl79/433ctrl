@@ -14,13 +14,13 @@ using namespace chrono;
 const time_point<high_resolution_clock> TP_UNSET;
 time_point<high_resolution_clock> g_last(TP_UNSET);
 const size_t MAX_TIME_VALUES = 128;
+const double MIN_TIME_DIFF_RATIO = 0.7;
 vector<uint32_t> g_times(MAX_TIME_VALUES);
 uint32_t g_time_idx = 0;
 uint8_t g_sync_count = 0;
 atomic<bool> g_capture_done(false);
 
 void send_rc_code(int pin, string& code, int repeat) {
-    cout << "Sending code on pin " << pin << endl; 
     pinMode(pin, OUTPUT);
     // parse the list of micro secs
     vector<useconds_t> codes;
@@ -38,6 +38,31 @@ void send_rc_code(int pin, string& code, int repeat) {
             out = !out;
         }
     }
+    digitalWrite(pin, 0);
+}
+
+uint32_t get_pulselen() {
+    uint32_t pulselen = 4000;
+    // find the smallest value first
+    for (uint32_t i = 0; i < g_time_idx; i++) {
+        if (g_times[i] < pulselen) {
+            pulselen = g_times[i];
+        }
+    }
+    // now we calculate the avg of all short values
+    uint32_t sum = 0;
+    uint32_t count = 0;
+    for (uint32_t i = 0; i < g_time_idx; i++) {
+        if (g_times[i] / pulselen == 1) {
+            if ((double) pulselen / g_times[i] < MIN_TIME_DIFF_RATIO) {
+                return 0;
+            }
+            sum += g_times[i];
+            count++;
+        }
+    }
+    pulselen = sum / count;
+    return pulselen;
 }
 
 void interrupt_handler() {
@@ -59,18 +84,16 @@ void interrupt_handler() {
         }
         if (timediff > 4000) {
             g_sync_count++;
-            if (g_sync_count == 3) {
-                uint32_t pulselen = timediff;
-                // find the smalles value and assume it as pulse len
-                for (uint32_t i = 0; i < g_time_idx; i++) {
-                    if (g_times[i] < pulselen) {
-                        pulselen = g_times[i];
-                    }
-                }
-                if (pulselen > 90 && pulselen < 700) {
+            if (g_sync_count == 2 && g_time_idx > 20) {
+                uint32_t pulselen = get_pulselen();
+                if (pulselen > 30 && pulselen < 1000) {
                     // output values as multiple pulselens
                     for (uint32_t i = 0; i < g_time_idx; i++) {
                         uint32_t pulses = g_times[i] / pulselen;
+                        // as the pulse length is the average of all short values, we could get 0 here
+                        if (pulses == 0) {
+                            pulses = 1;
+                        }
                         cout << (pulses * pulselen) << " ";
                     }
                     cout << endl;
@@ -88,7 +111,6 @@ void interrupt_handler() {
 }
 
 void recv_rc_code(int pin) {
-    cout << "Receiving code on pin " << pin << endl; 
     pinMode(pin, INPUT);
     if (wiringPiISR(pin, INT_EDGE_BOTH, interrupt_handler) < 0) {
         cerr << "wiringPiISR failed" << endl;
@@ -103,9 +125,9 @@ void usage(const char* prog) {
     cerr << "Usage: " << prog << " <Options>" << endl
               << endl
               << "Options:" << endl
-              << "  --rc-code='<code>'      Code to send (ints separated with spaces). This code can" << endl
+              << "  --code='<code>'         Code to send (ints separated with spaces). This code can" << endl
               << "                          be captured via --rc-learn." << endl
-              << "  --rc-learn              Capture a code sequence." << endl
+              << "  --learn                 Capture a code sequence." << endl
               << "  --pin=<number>          Transmitter/Receiver pin. Default is 0." << endl
               << "  --repeat=<number>       Number of times to repeat the code/message. This is" << endl
               << "                          needed as the RPi can't do real time from user space." << endl
@@ -118,8 +140,8 @@ int main(int argc, char** argv) {
         {
             {"pin", required_argument, 0, 'p'},
             {"repeat", required_argument, 0, 'r'},
-            {"rc-code", required_argument, 0, 'c'},
-            {"rc-learn", optional_argument, 0, 'l'},
+            {"code", required_argument, 0, 'c'},
+            {"learn", optional_argument, 0, 'l'},
             {0, 0, 0, 0},
         };
     
@@ -145,7 +167,7 @@ int main(int argc, char** argv) {
             break;
         case 'c':
             msg = optarg;
-            mode = 0; // RC mode
+            mode = 0;
             break;
         case 'l':
             mode = 1;

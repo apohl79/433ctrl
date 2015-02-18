@@ -1,4 +1,4 @@
-project(433bus)
+project(433rc)
 cmake_minimum_required(VERSION 2.6)
 
 aux_source_directory(. SOURCES)

@@ -3,7 +3,8 @@
 use strict;
 use JSON;
 
-my $sender = "nice -20 /usr/local/bin/433bus --repeat=50 --rc-code=";
+my $sender = "nice -20 /usr/local/bin/433rc --repeat=20 --code=";
+my $receiver = "nice -20 /usr/local/bin/433rc --learn --pin=2";
 my $wolcmd = "/usr/bin/wakeonlan";
 my $comp = "/opt/433ctrl/scripts/comp";
 my $config_dir = "/opt/433ctrl";
@@ -51,6 +52,9 @@ if (defined($device)) {
                         off_pre_commands => [] };
         push @{$config->{devices}}, $dev_new;
         save_config($config);
+        print "Generating scripts...\n";
+        write_script($dev_new->{id}, "on");
+        write_script($dev_new->{id}, "off");
     } elsif ($dev eq "addwol") {
         my $name = shift @ARGV;
         print "Enter HW address of the device (example: b8:27:eb:d1:68:7d): ";
@@ -66,6 +70,9 @@ if (defined($device)) {
                         off_pre_commands => ["$comp shutdown $name"] };
         push @{$config->{devices}}, $dev_new;
         save_config($config);
+        print "Generating scripts...\n";
+        write_script($dev_new->{id}, "on");
+        write_script($dev_new->{id}, "off");
     } elsif ($dev eq "addcomp") {
         my $name = shift @ARGV;
         print "Enter HW address of the device (example: b8:27:eb:d1:68:7d): ";
@@ -81,8 +88,11 @@ if (defined($device)) {
                         off_pre_commands => ["$comp shutdown $name"] };
         push @{$config->{devices}}, $dev_new;
         save_config($config);
+        print "Generating scripts...\n";
+        write_script($dev_new->{id}, "on");
+        write_script($dev_new->{id}, "off");
     } elsif ($dev eq "scripts") {
-        print "generating static scripts... \n";
+        print "Generating scripts...\n";
         foreach my $id (sort keys %{$devs_by_id}) {
             write_script($id, "on");
             write_script($id, "off");
@@ -125,19 +135,9 @@ sub write_script {
 }
 
 sub read_code {
-    system "pilight-debug > /tmp/433.pilight.dbg";
-    open F, "</tmp/433.pilight.dbg";
-    my $code;
-    while (<F>) {
-        if (/Raw code/) {
-            $code = <F>;
-            chomp $code;
-            $code =~ s/ +$//;
-            last;
-        }
-    }
-    close F;
-    unlink "/tmp/433.pilight.dbg";
+    my $code = `$receiver`;
+    chomp $code;
+    $code =~ s/ +$//;
     return $code;
 }
 
