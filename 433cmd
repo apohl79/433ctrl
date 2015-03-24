@@ -13,7 +13,7 @@ my $scripts_dir = "$config_dir/scripts";
 
 my $dev = shift @ARGV;
 
-print "loading devices... ";
+print "Loading devices... ";
 my ($config, $devs_by_id, $devs_by_name) = load_config();
 print "done\n";
 my $device = $devs_by_id->{$dev};
@@ -75,13 +75,17 @@ if (defined($device)) {
         write_script($dev_new->{id}, "off");
     } elsif ($dev eq "addcomp") {
         my $name = shift @ARGV;
-        print "Enter HW address of the device (example: b8:27:eb:d1:68:7d): ";
-        my $hwaddr = <STDIN>;
-        chomp $hwaddr;
+        print "Press the ON button for the device to add. Waiting... ";
+        my $on_code = read_code();
+        print "done\n";
+        sleep 3;
+        print "Press the OFF button for the device to add. Waiting... ";
+        my $off_code = read_code();
+        print "done\n";
         my $dev_new = { name => $name,
                         id => get_next_id(),
-                        on_code => "",
-                        off_code => "",
+                        on_code => $on_code,
+                        off_code => $off_code,
                         state => "off",
                         state_check => [],
                         on_post_commands => ["$comp startup $name"],
@@ -142,6 +146,10 @@ sub read_code {
 }
 
 sub get_next_id {
+    my $name = shift;
+    if (exists $devs_by_name->{$name}) {
+        return $devs_by_name->{$name}->{id};
+    }
     my @ids = sort(keys(%{$devs_by_id}));
     my $id = $ids[$#ids] + 1;
     return $id;
@@ -168,6 +176,12 @@ sub save_config {
   open F, ">$config_file" or die "error opening $config_file: $!";
   print F $data;
   close F;
+  $devs_by_id = {};
+  $devs_by_name = {};
+  foreach my $dev (@{$config->{devices}}) {
+    $devs_by_id->{$dev->{id}} = $dev;
+    $devs_by_name->{$dev->{name}} = $dev;
+  }
 }
 
 sub set_state {
